@@ -2,9 +2,11 @@
 # Phase A does not send anything; these take effect from Phase C.
 
 autosend_enabled: false        # SHADOW MODE. Flip to true only after auditing logs.
-daily_send_cap: 15             # hard ceiling per day
+daily_send_cap: 6              # hard ceiling per day (also bounded by Hunter credits)
 min_interview_prob_to_send: 0.70   # below this -> queue for manual review, don't send
-verified_email_only: true      # never send to risky/unknown/guessed addresses
+verified_email_only: true      # gate on verification...
+allow_high_confidence: true    # ...but accept Hunter confidence >= min_confidence too
+min_confidence: 0.90           # (user policy: verified OR >=90% confidence auto-sends)
 per_company_cap: 1             # max contacts emailed per company per run
 quiet_hours: [21, 8]           # local hours during which nothing sends
 followup_days: [3]             # business-day offsets; empty = no follow-ups

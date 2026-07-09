@@ -50,9 +50,14 @@ def validate(db: DB, rules: dict, job, contact: dict, draft: dict) -> Verdict:
     v = Verdict(ok=True)
     email = (contact.get("email") or "").lower()
 
-    # 1. verified email only
-    if rules.get("verified_email_only", True) and contact.get("verification_status") != "verified":
-        v.fail(f"email not verified (status={contact.get('verification_status')})")
+    # 1. verified OR high-confidence email (user policy)
+    if rules.get("verified_email_only", True):
+        status = contact.get("verification_status")
+        conf = float(contact.get("confidence") or 0)
+        min_conf = float(rules.get("min_confidence", 0.9))
+        ok = (status == "verified") or (rules.get("allow_high_confidence", True) and conf >= min_conf)
+        if not ok:
+            v.fail(f"email not verified/high-confidence (status={status}, conf={conf:.2f})")
 
     # 2. suppression / blocklist
     if db.is_suppressed(email):

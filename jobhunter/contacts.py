@@ -64,7 +64,7 @@ class ApolloRotatingProvider:
     def _advance(self):
         self.idx += 1
 
-    def find(self, domain: str, titles: list[str]) -> Optional[dict]:
+    def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
         while self._key():
             acct = self._key()
             try:
@@ -111,43 +111,69 @@ class ApolloRotatingProvider:
         return (r.json().get("person") or {}).get("email")
 
 
+_ATS_HOSTS = ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
+              "myworkdayjobs.com", "smartrecruiters.com", "job-boards")
+
+
+def _is_ats_host(domain: str) -> bool:
+    d = (domain or "").lower()
+    return (not d) or any(h in d for h in _ATS_HOSTS)
+
+
 class HunterProvider:
+    """Hunter.io with multi-key rotation: use key #1 until its quota is exhausted,
+    then advance to #2, #3 ... (the user's 'switch credential when limit is over')."""
     name = "hunter"
     BASE = "https://api.hunter.io/v2"
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self, api_keys: list[str]):
+        self.keys = [k for k in api_keys if k]
+        self.idx = 0
 
-    def find(self, domain: str, titles: list[str]) -> Optional[dict]:
-        try:
-            r = httpx.get(f"{self.BASE}/domain-search",
-                          params={"domain": domain, "api_key": self.api_key, "limit": 10},
-                          timeout=25)
-            r.raise_for_status()
-            emails = r.json().get("data", {}).get("emails", [])
-            best = _pick_by_title(emails, titles)
-            if not best or not _valid_syntax(best.get("value", "")):
-                return None
-            verify = self._verify(best["value"])
-            return {
-                "company": domain,
-                "full_name": " ".join(filter(None, [best.get("first_name"), best.get("last_name")])),
-                "title": best.get("position"), "linkedin_url": best.get("linkedin"),
-                "email": best["value"], "source_provider": "hunter",
-                "confidence": (best.get("confidence") or 0) / 100.0,
-                "verification_status": verify,
-            }
-        except Exception:
+    def _key(self) -> Optional[str]:
+        return self.keys[self.idx] if self.idx < len(self.keys) else None
+
+    def _get(self, path: str, params: dict):
+        """GET with key rotation on quota errors. Returns (json, ok) or (None, False)."""
+        while self._key() is not None:
+            p = {**params, "api_key": self._key()}
+            r = httpx.get(f"{self.BASE}/{path}", params=p, timeout=25)
+            if r.status_code in (429,) or (r.status_code == 403 and "usage" in r.text.lower()):
+                self.idx += 1          # this key is spent — rotate
+                continue
+            if r.status_code >= 400:
+                return None, False
+            return r.json(), True
+        return None, False             # all keys exhausted
+
+    def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
+        # ATS URLs give the board host, not the real company domain -> search by name
+        params = {"limit": 10}
+        if _is_ats_host(domain) and company:
+            params["company"] = company
+        else:
+            params["domain"] = domain
+        data, ok = self._get("domain-search", params)
+        if not ok or not data:
             return None
+        emails = data.get("data", {}).get("emails", [])
+        best = _pick_by_title(emails, titles)
+        if not best or not _valid_syntax(best.get("value", "")):
+            return None
+        return {
+            "company": company or domain,
+            "full_name": " ".join(filter(None, [best.get("first_name"), best.get("last_name")])),
+            "title": best.get("position"), "linkedin_url": best.get("linkedin"),
+            "email": best["value"], "source_provider": "hunter",
+            "confidence": (best.get("confidence") or 0) / 100.0,
+            "verification_status": self._verify(best["value"]),
+        }
 
     def _verify(self, email: str) -> str:
-        try:
-            r = httpx.get(f"{self.BASE}/email-verifier",
-                          params={"email": email, "api_key": self.api_key}, timeout=25)
-            r.raise_for_status()
-            return _map_hunter_status(r.json().get("data", {}).get("status"))
-        except Exception:
+        data, ok = self._get("email-verifier", {"email": email})
+        if not ok or not data:
             return "unknown"
+        return _map_hunter_status(data.get("data", {}).get("status"))
 
 
 class CompanySiteProvider:
@@ -155,7 +181,7 @@ class CompanySiteProvider:
     returns None so the waterfall reports 'not found' rather than a guess."""
     name = "company_site"
 
-    def find(self, domain: str, titles: list[str]) -> Optional[dict]:
+    def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
         return None
 
 
@@ -182,7 +208,12 @@ def _load_providers() -> list:
     import os
     providers = []
     accts: list[dict] = []
-    hunter_key = os.environ.get("HUNTER_API_KEY", "")
+
+    # Hunter keys (rotate through all of them): HUNTER_API_KEYS="k1,k2,k3" or HUNTER_API_KEY
+    hunter_keys = [k.strip() for k in os.environ.get("HUNTER_API_KEYS", "").split(",") if k.strip()]
+    single = os.environ.get("HUNTER_API_KEY", "").strip()
+    if single:
+        hunter_keys.append(single)
 
     env_keys = [k.strip() for k in os.environ.get("APOLLO_API_KEYS", "").split(",") if k.strip()]
     for i, k in enumerate(env_keys, 1):
@@ -193,12 +224,13 @@ def _load_providers() -> list:
         cfg = load_yaml("secrets/apollo_accounts.yaml")
         accts += cfg.get("accounts", [])
         fb = cfg.get("fallback", {})
-        hunter_key = hunter_key or fb.get("hunter_api_key", "")
+        for k in ([fb.get("hunter_api_key")] if fb.get("hunter_api_key") else []):
+            hunter_keys.append(k)
 
     if any(a.get("api_key") for a in accts):
         providers.append(ApolloRotatingProvider(accts))
-    if hunter_key:
-        providers.append(HunterProvider(hunter_key))
+    if hunter_keys:
+        providers.append(HunterProvider(hunter_keys))
     return providers
 
 
@@ -207,7 +239,7 @@ def discover_contact(db: DB, company: str, domain: str) -> Optional[dict]:
     if not domain:
         return None
     for prov in _load_providers():
-        contact = prov.find(domain, TARGET_TITLES)
+        contact = prov.find(domain, TARGET_TITLES, company)
         if contact:
             contact["company"] = company  # store under display name, not raw domain
             cid = db.save_contact(contact)

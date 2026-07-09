@@ -24,12 +24,34 @@ from .db import DB
 from .models import JobPosting
 from .profile import Profile
 
+import os as _os
+
 CONTACT_TASKS_PATH = ROOT / "data" / "contact_tasks.json"
 FOUND_CONTACTS_PATH = ROOT / "data" / "found_contacts.json"
 TASKS_PATH = ROOT / "data" / "outreach_tasks.json"
 DRAFTS_PATH = ROOT / "data" / "outreach_drafts.json"
 FIXED_TEMPLATE_PATH = ROOT / "config" / "outreach_template.md"
-OUTREACH_TOP_N = 25
+# Cap contact lookups per run. Hunter free = 50 searches/month, so keep this small
+# (env-overridable). Each shortlisted company = one lookup = one credit.
+OUTREACH_TOP_N = int(_os.environ.get("OUTREACH_TOP_N", "25"))
+
+
+_BRANDS = {
+    "openai": "OpenAI", "phonepe": "PhonePe", "scaleai": "Scale AI", "huggingface": "Hugging Face",
+    "elevenlabs": "ElevenLabs", "langchain": "LangChain", "clickhouse": "ClickHouse",
+    "databricks": "Databricks", "anthropic": "Anthropic", "postman": "Postman", "vercel": "Vercel",
+    "stripe": "Stripe", "ramp": "Ramp", "neon": "Neon", "mistral": "Mistral", "cred": "CRED",
+    "razorpay": "Razorpay", "cursor": "Cursor", "replit": "Replit", "modal": "Modal", "micro1": "micro1",
+}
+
+
+def _pretty_company(name: str) -> str:
+    key = name.lower().strip()
+    if key in _BRANDS:
+        return _BRANDS[key]
+    if name.islower():                       # lowercase ATS token -> Title Case
+        return " ".join(w.capitalize() for w in name.split())
+    return name                              # already mixed-case (e.g. "Sarvam AI")
 
 
 def render_fixed_drafts() -> int:
@@ -55,8 +77,7 @@ def render_fixed_drafts() -> int:
         # strip trailing tags like "(YC W22)", "(YC F24)", "(Series A)" from the name
         import re as _re
         company = _re.sub(r"\s*\([^)]*\)\s*$", "", company).strip()
-        if company.islower():  # ATS board tokens are lowercase; make it presentable
-            company = company.capitalize()
+        company = _pretty_company(company)
         def fill(s: str) -> str:
             return s.replace("[Name]", first_name).replace("[Company]", company)
         drafts.append({"id": t["id"], "subject": fill(subject_tpl),
@@ -290,6 +311,7 @@ def _email_task(job, contact, research, choose_template, load_template, job_hash
         "contact": {"full_name": contact.get("full_name"), "title": contact.get("title"),
                     "email": contact.get("email"),
                     "verification_status": contact.get("verification_status"),
+                    "confidence": contact.get("confidence"),
                     "linkedin_url": contact.get("linkedin_url")},
         "research": research, "template_class": tclass, "template_intent": load_template(tclass),
     }
