@@ -52,6 +52,9 @@ def render_fixed_drafts() -> int:
         full_name = (t.get("contact") or {}).get("full_name") or ""
         first_name = full_name.split()[0] if full_name.strip() else "there"
         company = (t.get("job") or {}).get("company") or ""
+        # strip trailing tags like "(YC W22)", "(YC F24)", "(Series A)" from the name
+        import re as _re
+        company = _re.sub(r"\s*\([^)]*\)\s*$", "", company).strip()
         if company.islower():  # ATS board tokens are lowercase; make it presentable
             company = company.capitalize()
         def fill(s: str) -> str:
