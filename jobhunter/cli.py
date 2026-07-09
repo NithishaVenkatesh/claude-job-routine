@@ -181,6 +181,24 @@ def cmd_ingest_leads() -> int:
     return 0
 
 
+def cmd_state_pull() -> int:
+    from .ghstate import pull_state
+    db = DB()
+    counts = pull_state(db)
+    print("state restored:", counts)
+    db.close()
+    return 0
+
+
+def cmd_state_push() -> int:
+    from .ghstate import push_state
+    db = DB()
+    size = push_state(db)
+    print(f"state pushed to repo ({size} bytes)")
+    db.close()
+    return 0
+
+
 def cmd_push_profile() -> int:
     from .config import ROOT
     db = DB()
@@ -238,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": cmd_report, "stats": cmd_stats, "queue": cmd_queue,
         "build-tasks": cmd_build_tasks, "commit-drafts": cmd_commit_drafts,
         "push-profile": cmd_push_profile, "ingest-leads": cmd_ingest_leads,
+        "state-pull": cmd_state_pull, "state-push": cmd_state_push,
     }
     if cmd == "list":
         return cmd_list(argv[1] if len(argv) > 1 else None)

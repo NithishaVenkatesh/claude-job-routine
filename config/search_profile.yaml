@@ -1,0 +1,49 @@
+# Public-safe search criteria (no contact info, no salary — those stay in the
+# routine's private prompt/env). Used by the cloud sandbox where Neon is unreachable.
+name: Nithisha Venkatesh
+headline: "Applied AI Engineer — agentic systems, production RAG, FastAPI backend"
+experience_level: junior
+years_experience: 1
+
+target_roles:
+  - Applied AI Engineer
+  - AI Engineer
+  - LLM Engineer
+  - Generative AI Engineer
+  - Agentic AI Engineer
+  - RAG Engineer
+  - ML Engineer
+  - Machine Learning Engineer
+  - AI Backend Engineer
+  - Python Backend Engineer
+  - AI Platform Engineer
+  - AI Solutions Engineer
+  - Forward Deployed Engineer
+  - Software Engineer
+
+reject_role_keywords: [sales, account executive, business development, recruiter, talent,
+  marketing, designer, ux, ui designer, accountant, finance, controller, legal, counsel,
+  customer success, support specialist, program manager, project manager, product manager,
+  data analyst, data entry, hr, people operations, executive assistant, office manager]
+
+too_senior_keywords: [senior staff, staff, principal, distinguished, lead, director, vp,
+  vice president, head of, manager, architect]
+
+employment_types: [full-time, contract, freelance, internship]
+locations: [remote, "remote india", bangalore, bengaluru, chennai, india]
+remote_pref: remote
+
+skills_core: [fastapi, rag, retrieval augmented generation, langgraph, langchain, llm,
+  agentic, agents, vector search, vector database, embeddings, reranking, cross-encoder,
+  prompt engineering, guardrails, python]
+skills_secondary: [pinecone, milvus, postgres, postgresql, neon, docker, typescript, sql,
+  huggingface, pytorch, tensorflow, langsmith, openai, anthropic, claude, groq,
+  azure openai, observability, microservices, rest api]
+
+dealbreakers:
+  max_years_required: 4
+  reject_unpaid: true
+
+# salary comes from env (private): SALARY_MIN_LPA / SALARY_MAX_LPA
+salary:
+  currency: INR

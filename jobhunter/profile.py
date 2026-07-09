@@ -78,7 +78,7 @@ def load_profile(cfg_path: str = "config/profile.yaml") -> Profile:
             context_text=_read("data/profile/context.md"),
         )
 
-    # Fallback: load from Neon (profile PII kept out of the repo).
+    # Fallback 1: Neon (profile PII kept out of the repo).
     import os
     import yaml
     if os.environ.get("DATABASE_URL"):
@@ -92,6 +92,16 @@ def load_profile(cfg_path: str = "config/profile.yaml") -> Profile:
                            context_text=db.get_profile_doc("context") or "")
         finally:
             db.close()
+
+    # Fallback 2: public-safe search profile (cloud sandbox — no Neon egress).
+    # Salary bounds come from private env vars, never the public repo.
+    sp = ROOT / "config" / "search_profile.yaml"
+    if sp.exists():
+        cfg = load_yaml("config/search_profile.yaml")
+        cfg.setdefault("salary", {})
+        cfg["salary"]["min_lpa"] = float(os.environ.get("SALARY_MIN_LPA", 6))
+        cfg["salary"]["max_lpa"] = float(os.environ.get("SALARY_MAX_LPA", 16))
+        return Profile(cfg=cfg)
 
     # Last resort: the example template.
     return Profile(cfg=load_yaml("config/profile.example.yaml"))
