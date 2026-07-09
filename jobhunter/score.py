@@ -128,11 +128,16 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
     # salary filter: reject only when a stated INR range tops out below the minimum.
     # (Above-range is fine — spec says never reject a great role for paying MORE.
     #  Unstated/USD salaries pass; we can't reject what isn't stated.)
-    min_lpa = float((p.cfg.get("salary") or {}).get("min_lpa", 0) or 0)
+    scfg = p.cfg.get("salary") or {}
+    min_lpa = float(scfg.get("min_lpa", 0) or 0)
+    max_lpa = float(scfg.get("max_lpa", scfg.get("target_lpa", 0)) or 0)
     sal = parse_salary_lpa(job.description)
     if sal and min_lpa and sal[1] < min_lpa:
         return Score(h, 0, 0, dimensions={"salary_lpa": sal},
                      reject_reason=f"salary {sal[0]:g}-{sal[1]:g} LPA below {min_lpa:g} LPA minimum")
+    # far above range (stated min > 1.5x ceiling) usually means a senior band with
+    # heavy competition — keep the job, but discount interview odds slightly
+    above_range = bool(sal and max_lpa and sal[0] > max_lpa * 1.5)
 
     # ---- positive signals -------------------------------------------------
     title_fit = _title_match(job.title, p.target_roles)
@@ -165,7 +170,8 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
     recency_boost = {"24h": 1.0, "48h": 0.9, "72h": 0.8, "7d": 0.6, "older": 0.35, "unknown": 0.5}[bucket]
     # seniority stretch: a ~1yr candidate is a long shot for senior/lead titles
     stretch = 0.6 if _STRETCH_SENIORITY.search(title) else 1.0
-    interview_prob = min(0.95, (score / 100.0) * recency_boost * stretch)
+    comp_penalty = 0.85 if above_range else 1.0
+    interview_prob = min(0.95, (score / 100.0) * recency_boost * stretch * comp_penalty)
 
     # hard recency rule (AGENT_SPEC Stage 4): >7 days old is rejected unless exceptional.
     if bucket == "older" and score < 85:

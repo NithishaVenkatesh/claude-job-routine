@@ -138,6 +138,49 @@ def cmd_test_send(to: str | None = None) -> int:
     return 0 if ok else 1
 
 
+def cmd_ingest_leads() -> int:
+    """Ingest jobs the agent found by web-searching (data/web_leads.json), score them,
+    and refresh contact tasks so fresh finds enter today's outreach."""
+    import json
+    from .config import ROOT
+    from .models import JobPosting
+    from .profile import load_profile
+    from .routine import run_scoring
+    from .outreach import prepare
+
+    leads_path = ROOT / "data" / "web_leads.json"
+    if not leads_path.exists():
+        print("no data/web_leads.json — nothing to ingest")
+        return 0
+    leads = json.loads(leads_path.read_text()).get("jobs", [])
+    db = DB()
+    jobs = []
+    for j in leads:
+        if not j.get("title") or not j.get("company") or not j.get("url"):
+            continue
+        posted = None
+        if j.get("posted_at"):
+            try:
+                posted = datetime.fromisoformat(str(j["posted_at"]).replace("Z", "+00:00"))
+            except ValueError:
+                posted = None
+        jobs.append(JobPosting(
+            source="web_lead", source_company="agent-search", external_id=j["url"][:200],
+            title=j["title"][:150], company=j["company"][:80], url=j["url"],
+            location=j.get("location", "") or "", remote="remote" in (j.get("location", "") or "").lower(),
+            description=(j.get("description") or "")[:4000],
+            posted_at=posted or datetime.now(timezone.utc),
+        ))
+    new_jobs, seen = db.bulk_upsert_jobs(jobs)
+    p = load_profile()
+    sp = run_scoring(db, p, use_llm=False)
+    pr = prepare(db, p)   # refresh contact tasks incl. fresh leads
+    print(f"leads_in={len(leads)} new={len(new_jobs)} already_known={seen} "
+          f"scored={sp.scored} shortlisted_now={sp.shortlisted} contact_tasks={pr.need_contact}")
+    db.close()
+    return 0
+
+
 def cmd_push_profile() -> int:
     from .config import ROOT
     db = DB()
@@ -194,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         "routine": cmd_routine, "search": cmd_search, "score": cmd_score,
         "report": cmd_report, "stats": cmd_stats, "queue": cmd_queue,
         "build-tasks": cmd_build_tasks, "commit-drafts": cmd_commit_drafts,
-        "push-profile": cmd_push_profile,
+        "push-profile": cmd_push_profile, "ingest-leads": cmd_ingest_leads,
     }
     if cmd == "list":
         return cmd_list(argv[1] if len(argv) > 1 else None)

@@ -1,15 +1,38 @@
-# Job source seed list. Each entry = one company's public ATS board.
-# "company" is the board token/slug in the ATS URL, NOT the display name.
-#   Greenhouse: boards.greenhouse.io/<token>          -> type: greenhouse
-#   Lever:      jobs.lever.co/<slug>                  -> type: lever
-#   Ashby:      jobs.ashbyhq.com/<org>                -> type: ashby
-#
-# This example list is real, well-known AI/tech boards used to smoke-test the
-# pipeline. Replace/extend with YOUR target companies (BLUEPRINT §2/§4).
+# Job sources — all VERIFIED working (dead tokens pruned 2026-07-09).
+# Two kinds:
+#  1. Aggregate/hidden sources: whole feeds where startups post before job boards.
+#  2. Company ATS boards: token = slug in the board URL.
+# A dead/renamed token logs a failure and is skipped — safe to add guesses; the daily
+# report's "source failures" section tells you what to prune.
+# The routine ALSO web-searches for fresh hiring posts daily (web_leads -> ingest-leads).
+
 sources:
+  # ---- hidden / aggregate sources (high value, lower competition) ----
+  - { type: hackernews, company: whoishiring }      # startups post here before job boards
+  - { type: remoteok, company: all }
+  - { type: weworkremotely, company: programming }
+  - { type: weworkremotely, company: fullstack }
+
+  # ---- AI labs & AI-first startups (verified boards) ----
   - { type: greenhouse, company: anthropic }
-  - { type: greenhouse, company: databricks }
-  - { type: greenhouse, company: stripe }
-  - { type: lever, company: mistral }
   - { type: ashby, company: openai }
+  - { type: lever, company: mistral }
+  - { type: greenhouse, company: databricks }
+  - { type: greenhouse, company: scaleai }
+  - { type: ashby, company: elevenlabs }
+  - { type: ashby, company: langchain }
+  - { type: ashby, company: replit }
+  - { type: ashby, company: cursor }
+  - { type: ashby, company: modal }
+
+  # ---- India-friendly / India-present (verified) ----
+  - { type: greenhouse, company: postman }
+  - { type: greenhouse, company: phonepe }
+  - { type: lever, company: cred }
+
+  # ---- dev-tool / infra, remote-friendly (verified) ----
+  - { type: greenhouse, company: stripe }
   - { type: ashby, company: ramp }
+  - { type: greenhouse, company: vercel }
+  - { type: ashby, company: neon }
+  - { type: greenhouse, company: clickhouse }
