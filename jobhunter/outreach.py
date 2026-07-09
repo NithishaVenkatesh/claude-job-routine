@@ -28,7 +28,38 @@ CONTACT_TASKS_PATH = ROOT / "data" / "contact_tasks.json"
 FOUND_CONTACTS_PATH = ROOT / "data" / "found_contacts.json"
 TASKS_PATH = ROOT / "data" / "outreach_tasks.json"
 DRAFTS_PATH = ROOT / "data" / "outreach_drafts.json"
+FIXED_TEMPLATE_PATH = ROOT / "config" / "outreach_template.md"
 OUTREACH_TOP_N = 25
+
+
+def render_fixed_drafts() -> int:
+    """If config/outreach_template.md exists, render every task with it (fill [Name] and
+    [Company]) and write outreach_drafts.json deterministically — no LLM writing.
+    Returns the number of drafts rendered; 0 if no fixed template or no tasks."""
+    if not FIXED_TEMPLATE_PATH.exists() or not TASKS_PATH.exists():
+        return 0
+    raw = FIXED_TEMPLATE_PATH.read_text()
+    # First line "Subject: ..." is the subject; the rest is the body.
+    lines = raw.strip().splitlines()
+    subject_tpl, body_tpl = "", raw.strip()
+    if lines and lines[0].lower().startswith("subject:"):
+        subject_tpl = lines[0][len("subject:"):].strip()
+        body_tpl = "\n".join(lines[1:]).strip()
+
+    tasks = json.loads(TASKS_PATH.read_text()).get("tasks", [])
+    drafts = []
+    for t in tasks:
+        full_name = (t.get("contact") or {}).get("full_name") or ""
+        first_name = full_name.split()[0] if full_name.strip() else "there"
+        company = (t.get("job") or {}).get("company") or ""
+        if company.islower():  # ATS board tokens are lowercase; make it presentable
+            company = company.capitalize()
+        def fill(s: str) -> str:
+            return s.replace("[Name]", first_name).replace("[Company]", company)
+        drafts.append({"id": t["id"], "subject": fill(subject_tpl),
+                       "body": fill(body_tpl), "hook_note": "fixed template"})
+    DRAFTS_PATH.write_text(json.dumps({"drafts": drafts}, indent=2))
+    return len(drafts)
 
 
 @dataclass
@@ -165,6 +196,7 @@ def _prepare_via_code(db, p, candidates, res: PrepareResult):
         res.resolved_by_code += 1
         tasks.append(_email_task(job, contact, research, choose_template, _load_template))
     _write_outreach_tasks(p, tasks)
+    render_fixed_drafts()
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +246,9 @@ def build_tasks(db: DB, p: Profile) -> BuildResult:
         tasks.append(_email_task(job, contact, research, choose_template, _load_template, jh))
     _write_outreach_tasks(p, tasks)
     res.tasks_written = len(tasks)
-    db.log("outreach", "build_tasks", "-", "done", {"stored": res.stored, "tasks": res.tasks_written})
+    rendered = render_fixed_drafts()   # fixed template -> drafts, deterministically
+    db.log("outreach", "build_tasks", "-", "done",
+           {"stored": res.stored, "tasks": res.tasks_written, "rendered": rendered})
     return res
 
 
