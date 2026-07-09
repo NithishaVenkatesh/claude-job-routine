@@ -118,10 +118,13 @@ def run_daily(db: DB | None = None, use_llm: bool = True) -> str:
     stage_status["prepare"] = (f"mode={pr.mode}, considered={pr.considered}, "
                                f"need_contact={pr.need_contact}, by_code={pr.resolved_by_code}")
 
-    # Stage: report
+    # Stage: report (markdown + JSON/CSV/HTML dashboard)
+    from .report import build_report_data, write_artifacts
     report = build_report(db, p, ing, sp, pr)
     path = write_report(report)
+    artifacts = write_artifacts(build_report_data(db, p, ing, sp, pr))
     stage_status["report"] = path
+    stage_status["artifacts"] = artifacts
 
     db.finish_run(run_id, stage_status, report[:2000])
     db.log("routine", "run", str(run_id), "done", stage_status)

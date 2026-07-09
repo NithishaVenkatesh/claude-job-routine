@@ -242,6 +242,11 @@ class DB:
                ORDER BY s.interview_prob DESC, s.score DESC
                LIMIT ?""", (min_prob, limit))
 
+    def get_interview_prob(self, content_hash: str):
+        r = self.s.queryone("SELECT interview_prob FROM job_scores WHERE content_hash=?",
+                            (content_hash,))
+        return r["interview_prob"] if r else None
+
     def count_by_status(self) -> dict:
         rows = self.s.query("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status")
         return {r["status"]: r["c"] for r in rows}

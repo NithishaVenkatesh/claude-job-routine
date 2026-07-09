@@ -100,4 +100,11 @@ def validate(db: DB, rules: dict, job, contact: dict, draft: dict) -> Verdict:
     if job.url and not check_email_alive(job.url):
         v.fail("job posting no longer reachable")
 
+    # 9. interview-probability floor — below it, queue for manual review instead of sending
+    min_prob = float(rules.get("min_interview_prob_to_send", 0) or 0)
+    if min_prob:
+        prob = db.get_interview_prob(job.content_hash())
+        if prob is not None and prob < min_prob:
+            v.fail(f"interview probability {prob:.2f} below send floor {min_prob:.2f}")
+
     return v

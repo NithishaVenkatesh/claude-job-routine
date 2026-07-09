@@ -54,6 +54,16 @@ def _pretty_company(name: str) -> str:
     return name                              # already mixed-case (e.g. "Sarvam AI")
 
 
+def _clean_company(name: str) -> str:
+    """Strip trailing tags like '(YC W22)' / '(Series A)' then apply brand casing."""
+    import re as _re
+    return _pretty_company(_re.sub(r"\s*\([^)]*\)\s*$", "", name or "").strip())
+
+
+def _first_name(full_name: str) -> str:
+    return full_name.split()[0] if (full_name or "").strip() else "there"
+
+
 def render_fixed_drafts() -> int:
     """If config/outreach_template.md exists, render every task with it (fill [Name] and
     [Company]) and write outreach_drafts.json deterministically — no LLM writing.
@@ -71,13 +81,8 @@ def render_fixed_drafts() -> int:
     tasks = json.loads(TASKS_PATH.read_text()).get("tasks", [])
     drafts = []
     for t in tasks:
-        full_name = (t.get("contact") or {}).get("full_name") or ""
-        first_name = full_name.split()[0] if full_name.strip() else "there"
-        company = (t.get("job") or {}).get("company") or ""
-        # strip trailing tags like "(YC W22)", "(YC F24)", "(Series A)" from the name
-        import re as _re
-        company = _re.sub(r"\s*\([^)]*\)\s*$", "", company).strip()
-        company = _pretty_company(company)
+        first_name = _first_name((t.get("contact") or {}).get("full_name") or "")
+        company = _clean_company((t.get("job") or {}).get("company") or "")
         def fill(s: str) -> str:
             return s.replace("[Name]", first_name).replace("[Company]", company)
         drafts.append({"id": t["id"], "subject": fill(subject_tpl),
@@ -334,7 +339,8 @@ def _write_outreach_tasks(p: Profile, tasks: list):
 
 # --------------------------------------------------------------------------
 def commit(db: DB, p: Profile) -> CommitResult:
-    from . import validate as validate_mod, send as send_mod
+    import time
+    from . import validate as validate_mod, send as send_mod, pacing
     res = CommitResult()
     if not DRAFTS_PATH.exists():
         res._hold("no drafts file (agent wrote nothing)")
@@ -348,6 +354,9 @@ def commit(db: DB, p: Profile) -> CommitResult:
     rules = validate_mod.load_rules()
     autosend = bool(rules.get("autosend_enabled", False))
     res.mode = "live" if (autosend and send_mod.sender_ready()) else "shadow"
+    if res.mode == "live" and pacing.within_quiet_hours(rules):
+        res.mode = "quiet"   # queue everything; next daytime run sends
+    breaker = pacing.CircuitBreaker(int(rules.get("max_consecutive_send_failures", 3)))
 
     for d in drafts:
         res.drafts_read += 1
@@ -367,14 +376,26 @@ def commit(db: DB, p: Profile) -> CommitResult:
                "body": draft["body"], "hook_note": draft["hook_note"],
                "safety": {"validate": verdict.reasons}, "status": "draft"}
 
-        if not (res.mode == "live" and verdict.ok):
+        if not (res.mode == "live" and verdict.ok) or breaker.open:
             row["status"] = "queued"
             db.save_email(row)
             res.queued += 1
-            res._hold(verdict.reasons[0] if verdict.reasons else "shadow mode")
+            if breaker.open:
+                res._hold("send circuit breaker open (consecutive failures)")
+            elif verdict.reasons:
+                res._hold(verdict.reasons[0])
+            else:
+                res._hold("quiet hours (queued for daytime)" if res.mode == "quiet" else "shadow mode")
             continue
 
+        # human-like pacing: never machine-gun a batch (AGENT_SPEC: 90-300s + jitter)
+        if res.sent + res.failed > 0:
+            delay = pacing.send_delay_seconds(rules)
+            db.log("send", "pacing", "-", "sleep", {"seconds": round(delay, 1)})
+            time.sleep(delay)
+
         ok, info = send_mod.send_email(contact["email"], draft["subject"], draft["body"], from_name=p.name)
+        breaker.record(ok)
         if ok:
             row["status"] = "sent"
             eid = db.save_email(row)

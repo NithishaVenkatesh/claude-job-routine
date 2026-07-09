@@ -202,10 +202,12 @@ _HIRING_TITLES = (
 
 
 def _pick_by_title(items: list[dict], titles: list[str]) -> Optional[dict]:
-    """Return the best hiring-relevant contact, or None if there isn't one (skip company)."""
+    """Return the best hiring-relevant contact, or None if there isn't one (skip company).
+    Word-boundary match, not substring — 'cto' must never match inside 'direCTOr'."""
     for want in _HIRING_TITLES:
+        pat = re.compile(rf"\b{re.escape(want)}\b")
         for it in items:
-            if want in (it.get("position") or "").lower():
+            if pat.search((it.get("position") or "").lower()):
                 return it
     return None   # no relevant person -> do NOT email anyone here
 
