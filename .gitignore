@@ -1,0 +1,27 @@
+# Secrets — NEVER commit
+.env
+secrets/*.yaml
+secrets/*.json
+!secrets/*.example.yaml
+
+# Local DB + transient outputs (cloud uses Neon; reports/logs are per-run)
+*.db
+data/jobhunter.db
+data/reports/
+data/logs/
+data/*.json
+
+# Profile PII lives in Neon (profile_docs table), NOT in the repo — so the repo can
+# be public/code-only. Push it with:  python -m jobhunter.cli push-profile
+config/profile.yaml
+data/profile/
+
+# Unrelated project living in the same folder — not part of this repo
+portfolio-v2/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

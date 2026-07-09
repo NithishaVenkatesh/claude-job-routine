@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd job: runs the daily routine at 07:00 local time.
+     Uses launchd (not cron) so a run missed while the Mac is asleep fires on wake
+     (RunAtLoad + StartCalendarInterval). Install instructions in deploy/README.md. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jobhunter.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/nithisha/Documents/Jobs/Fetch jobs/deploy/run_routine.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>7</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- Fire a missed run when the machine wakes, rather than skipping the day. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nithisha/Documents/Jobs/Fetch jobs/data/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nithisha/Documents/Jobs/Fetch jobs/data/logs/launchd.err.log</string>
+</dict>
+</plist>

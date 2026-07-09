@@ -1,0 +1,15 @@
+# Job source seed list. Each entry = one company's public ATS board.
+# "company" is the board token/slug in the ATS URL, NOT the display name.
+#   Greenhouse: boards.greenhouse.io/<token>          -> type: greenhouse
+#   Lever:      jobs.lever.co/<slug>                  -> type: lever
+#   Ashby:      jobs.ashbyhq.com/<org>                -> type: ashby
+#
+# This example list is real, well-known AI/tech boards used to smoke-test the
+# pipeline. Replace/extend with YOUR target companies (BLUEPRINT §2/§4).
+sources:
+  - { type: greenhouse, company: anthropic }
+  - { type: greenhouse, company: databricks }
+  - { type: greenhouse, company: stripe }
+  - { type: lever, company: mistral }
+  - { type: ashby, company: openai }
+  - { type: ashby, company: ramp }

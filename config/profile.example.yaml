@@ -1,0 +1,41 @@
+# YOUR profile — drives matching, ranking, and personalization (BLUEPRINT §2.1).
+# Copy to config/profile.yaml and fill in. The resume PDF/text is the source of
+# truth for facts; this file captures preferences the resume doesn't state.
+
+name: ""
+headline: ""              # e.g. "AI/ML Engineer, 2 yrs, LLM + RAG"
+experience_level: ""      # intern | entry | junior | mid | senior
+work_authorization: ""    # e.g. "India citizen; open to remote-global"
+
+target_roles:
+  - AI Engineer
+  - ML Engineer
+  - LLM Engineer
+  - Applied AI Engineer
+  - Python Developer
+  - Backend Engineer
+
+employment_types: [full-time, contract, freelance, internship]
+locations: [remote, "Bangalore", "Chennai"]
+remote_pref: remote        # remote | hybrid | onsite | any
+
+salary:
+  currency: INR
+  min_lpa: 6
+  target_lpa: 12
+  flexible_for_exceptional: true
+
+industries_prefer: [ai, developer-tools, saas, fintech]
+industries_avoid: []
+company_size_pref: [seed, series-a, series-b, startup]  # low-competition bias
+
+dealbreakers:
+  - unpaid roles
+  - commission-only
+  - years_experience_required_over: 4
+
+# Free-text context that sharpens matching + personalization. Be specific.
+strengths: ""             # e.g. "shipped a RAG chatbot handling 10k docs..."
+notable_projects: ""
+interests: ""             # authentic hooks for outreach
+warm_connections: ""      # companies/people where you know someone (referral > cold)

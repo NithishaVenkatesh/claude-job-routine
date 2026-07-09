@@ -1,0 +1,20 @@
+# Outreach guardrails (BLUEPRINT §15). Enforced in CODE, not by the LLM.
+# Phase A does not send anything; these take effect from Phase C.
+
+autosend_enabled: false        # SHADOW MODE. Flip to true only after auditing logs.
+daily_send_cap: 15             # hard ceiling per day
+min_interview_prob_to_send: 0.70   # below this -> queue for manual review, don't send
+verified_email_only: true      # never send to risky/unknown/guessed addresses
+per_company_cap: 1             # max contacts emailed per company per run
+quiet_hours: [21, 8]           # local hours during which nothing sends
+followup_days: [3]             # business-day offsets; empty = no follow-ups
+max_followups: 1
+
+# Compliance (BLUEPRINT §5)
+exclude_regions: [EU, UK, CA]  # skip contacts in these regions in v1 (GDPR/CASL)
+compliance_footer: true        # append name + opt-out + physical address (CAN-SPAM)
+
+# Safety valves
+bounce_rate_pause_threshold: 0.05   # auto-pause sending if rolling bounce rate exceeds
+blocklist_companies: []             # never contact
+blocklist_domains: []

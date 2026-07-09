@@ -1,0 +1,19 @@
+# Core — runs on Python 3.9+
+httpx>=0.24,<0.28
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# Storage: Postgres (Neon) for cloud/persistent state; SQLite (stdlib) for local
+psycopg[binary]>=3.1
+
+# LLM providers (Azure OpenAI primary; Anthropic optional)
+openai>=1.30            # Azure OpenAI via AzureOpenAI client
+# anthropic>=0.40       # uncomment if using Anthropic instead
+
+# Email sending (Gmail API) — needed only for live send; run deploy/authorize_gmail.py once
+google-api-python-client>=2.100
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+
+# Optional future upgrades:
+# serpapi / rapidapi client  # richer job-source breadth + real company web research
