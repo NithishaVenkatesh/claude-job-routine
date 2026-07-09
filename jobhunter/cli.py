@@ -181,20 +181,20 @@ def cmd_ingest_leads() -> int:
     return 0
 
 
-def cmd_state_pull() -> int:
-    from .ghstate import pull_state
+def cmd_state_pull(path: str | None = None) -> int:
+    from .ghstate import pull_state, DEFAULT_IN
     db = DB()
-    counts = pull_state(db)
+    counts = pull_state(db, path or DEFAULT_IN)
     print("state restored:", counts)
     db.close()
     return 0
 
 
-def cmd_state_push() -> int:
-    from .ghstate import push_state
+def cmd_state_push(path: str | None = None) -> int:
+    from .ghstate import push_state, DEFAULT_OUT
     db = DB()
-    size = push_state(db)
-    print(f"state pushed to repo ({size} bytes)")
+    size = push_state(db, path or DEFAULT_OUT)
+    print(f"state written to {path or DEFAULT_OUT} ({size} bytes)")
     db.close()
     return 0
 
@@ -262,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list(argv[1] if len(argv) > 1 else None)
     if cmd == "test-send":
         return cmd_test_send(argv[1] if len(argv) > 1 else None)
+    if cmd == "state-pull":
+        return cmd_state_pull(argv[1] if len(argv) > 1 else None)
+    if cmd == "state-push":
+        return cmd_state_push(argv[1] if len(argv) > 1 else None)
     if cmd in dispatch:
         return dispatch[cmd]()
     print(__doc__)

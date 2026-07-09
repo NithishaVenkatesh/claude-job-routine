@@ -1,62 +1,57 @@
-"""Persistent state via the GitHub Contents API — for environments where every host
-except api.github.com is firewalled (the Claude cloud sandbox).
+"""Persistent state as a single JSON file on disk.
 
-State = one JSON file (state/state.json) in the repo:
-  seen:      [{hash, company, title, status}]      -> prevents re-scoring/re-considering
-  contacts:  [contact rows]                        -> known contacts
-  emails:    [email rows incl. body]               -> queue + sent history (dedup!)
+In the locked-down cloud sandbox, the ONLY store the agent can reach is via its
+server-side MCP connectors (Google Drive). So the flow is:
+  agent downloads state file from Drive -> data/state_in.json
+  `state-pull data/state_in.json`   loads it into the local DB
+  ... pipeline runs ...
+  `state-push data/state_out.json`  dumps the DB to a file
+  agent uploads data/state_out.json back to Drive
+
+This module only touches LOCAL files — no network. The agent handles the Drive
+transfer with MCP tools. (Locally on a Mac you don't need this at all; Neon/SQLite
+is the store there.)
+
+State schema (state.json):
+  seen:        [{hash, company, title, status, posted_at}]
+  contacts:    [contact rows]
+  emails:      [email rows incl. body]     <- the real dedup: who we've contacted
   suppression: [{email, reason}]
-
-pull_state(db): fetch JSON -> seed the (fresh, local SQLite) DB.
-push_state(db): dump DB -> commit JSON back to the repo.
-
-Env: GITHUB_TOKEN (contents:write), optional GITHUB_STATE_REPO (owner/repo).
 """
 from __future__ import annotations
 
-import base64
 import json
-import os
-
-import httpx
+from pathlib import Path
 
 from .db import DB
 
-# State lives in a PRIVATE repo — it contains contacts' emails and outreach bodies,
-# which must never land in the public code repo.
-REPO = os.environ.get("GITHUB_STATE_REPO", "NithishaVenkatesh/claude-job-state")
-PATH = "state/state.json"
-API = f"https://api.github.com/repos/{REPO}/contents/{PATH}"
+DEFAULT_IN = "data/state_in.json"
+DEFAULT_OUT = "data/state_out.json"
+_NULL_TS = "1970-01-01T00:00:00+00:00"
 
 
-def _headers():
-    tok = os.environ.get("GITHUB_TOKEN", "")
-    if not tok:
-        raise RuntimeError("GITHUB_TOKEN not set — cannot sync state")
-    return {"Authorization": f"Bearer {tok}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28"}
+def _serialize(db: DB) -> dict:
+    seen = [{"hash": r["content_hash"], "company": r["company"], "title": r["title"],
+             "status": r["status"], "posted_at": r["posted_at"]}
+            for r in db.all_jobs()]
+    contacts = [dict(company=r["company"], full_name=r["full_name"], title=r["title"],
+                     linkedin_url=r["linkedin_url"], email=r["email"],
+                     source_provider=r["source_provider"], confidence=r["confidence"],
+                     verification_status=r["verification_status"])
+                for r in db.s.query("SELECT * FROM contacts")]
+    emails = [dict(job_hash=r["job_hash"], contact_id=r["contact_id"], company=r["company"],
+                   to_email=r["to_email"], template_class=r["template_class"],
+                   subject=r["subject"], body=r["body"], hook_note=r["hook_note"],
+                   status=r["status"], sent_at=r["sent_at"])
+              for r in db.s.query("SELECT * FROM emails")]
+    suppression = [dict(email=r["email"], reason=r["reason"])
+                   for r in db.s.query("SELECT * FROM suppression")]
+    return {"version": 1, "seen": seen, "contacts": contacts,
+            "emails": emails, "suppression": suppression}
 
 
-def _fetch() -> tuple[dict | None, str | None]:
-    """Returns (state_dict, blob_sha) or (None, None) if the file doesn't exist yet."""
-    r = httpx.get(API, headers=_headers(), timeout=30)
-    if r.status_code == 404:
-        return None, None
-    r.raise_for_status()
-    data = r.json()
-    content = base64.b64decode(data["content"]).decode("utf-8")
-    return json.loads(content), data["sha"]
-
-
-def pull_state(db: DB) -> dict:
-    """Seed a fresh DB from the repo's state file. Idempotent."""
-    state, _ = _fetch()
+def _load(db: DB, state: dict) -> dict:
     counts = {"seen": 0, "contacts": 0, "emails": 0, "suppression": 0}
-    if not state:
-        return counts
-
-    now = "1970-01-01T00:00:00+00:00"
     for j in state.get("seen", []):
         try:
             db.s.execute(
@@ -65,13 +60,12 @@ def pull_state(db: DB) -> dict:
                      posted_at, first_seen, last_seen, status)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                 (j["hash"], "state", "state", j["hash"][:16], j.get("title", ""),
-                 j.get("company", ""), "", "", 0, "", "", j.get("posted_at"), now, now,
-                 j.get("status", "seen_prior")))
-            # a score row marks it as already-processed so it's never re-scored
+                 j.get("company", ""), "", "", 0, "", "", j.get("posted_at"),
+                 _NULL_TS, _NULL_TS, j.get("status", "seen_prior")))
             db.s.execute(
                 """INSERT INTO job_scores (content_hash, score, interview_prob, model, scored_at)
                    VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                (j["hash"], 0, 0, "state_restore", now))
+                (j["hash"], 0, 0, "state_restore", _NULL_TS))
             counts["seen"] += 1
         except Exception:
             continue
@@ -91,33 +85,22 @@ def pull_state(db: DB) -> dict:
     return counts
 
 
-def push_state(db: DB, message: str = "routine: update state") -> int:
-    """Dump the DB's durable facts into state/state.json in the repo."""
-    seen = [{"hash": r["content_hash"], "company": r["company"], "title": r["title"],
-             "status": r["status"], "posted_at": r["posted_at"]}
-            for r in db.all_jobs()]
-    contacts = [dict(company=r["company"], full_name=r["full_name"], title=r["title"],
-                     linkedin_url=r["linkedin_url"], email=r["email"],
-                     source_provider=r["source_provider"], confidence=r["confidence"],
-                     verification_status=r["verification_status"])
-                for r in db.s.query("SELECT * FROM contacts")]
-    emails = [dict(job_hash=r["job_hash"], contact_id=r["contact_id"], company=r["company"],
-                   to_email=r["to_email"], template_class=r["template_class"],
-                   subject=r["subject"], body=r["body"], hook_note=r["hook_note"],
-                   status=r["status"], sent_at=r["sent_at"])
-              for r in db.s.query("SELECT * FROM emails")]
-    suppression = [dict(email=r["email"], reason=r["reason"])
-                   for r in db.s.query("SELECT * FROM suppression")]
+def pull_state(db: DB, path: str = DEFAULT_IN) -> dict:
+    """Load state from a local JSON file. No-op (first run) if the file is missing."""
+    p = Path(path)
+    if not p.exists():
+        return {"seen": 0, "contacts": 0, "emails": 0, "suppression": 0, "_note": "no state file yet"}
+    try:
+        state = json.loads(p.read_text())
+    except (ValueError, OSError) as e:
+        return {"error": f"could not read {path}: {e}"}
+    return _load(db, state)
 
-    state = {"version": 1, "seen": seen, "contacts": contacts,
-             "emails": emails, "suppression": suppression}
-    payload = json.dumps(state, indent=1)
 
-    _, sha = _fetch()
-    body = {"message": message,
-            "content": base64.b64encode(payload.encode()).decode()}
-    if sha:
-        body["sha"] = sha
-    r = httpx.put(API, headers=_headers(), json=body, timeout=30)
-    r.raise_for_status()
+def push_state(db: DB, path: str = DEFAULT_OUT) -> int:
+    """Dump the DB's durable facts to a local JSON file for the agent to upload."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(_serialize(db), indent=1)
+    p.write_text(payload)
     return len(payload)
