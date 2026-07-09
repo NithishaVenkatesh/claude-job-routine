@@ -127,16 +127,41 @@ def _profile_block(p: Profile) -> dict:
 
 
 # --------------------------------------------------------------------------
+def _bucket_of(posted_at: str | None) -> str:
+    from datetime import datetime, timezone
+    if not posted_at:
+        return "unknown"
+    try:
+        h = (datetime.now(timezone.utc) - datetime.fromisoformat(posted_at)).total_seconds() / 3600
+    except ValueError:
+        return "unknown"
+    return "24h" if h <= 24 else "48h" if h <= 48 else "72h" if h <= 72 else "7d" if h <= 168 else "older"
+
+
+def _freshest_first(rows, limit: int):
+    """AGENT_SPEC Stage 4: fill outreach slots from <24h jobs FIRST; expand to 48h,
+    then 72h, then 7d only if slots remain. Never include >7d."""
+    buckets = {"24h": [], "48h": [], "72h": [], "7d": []}
+    for r in rows:
+        b = _bucket_of(r["posted_at"])
+        if b in buckets:
+            buckets[b].append(r)
+    picked = []
+    for b in ("24h", "48h", "72h", "7d"):
+        if len(picked) >= limit:
+            break
+        picked.extend(buckets[b][: limit - len(picked)])
+    return picked
+
+
 def prepare(db: DB, p: Profile, limit: int = OUTREACH_TOP_N) -> PrepareResult:
     from . import contacts as contacts_mod, research as research_mod
     res = PrepareResult()
 
-    top = [r for r in db.shortlist(limit=limit)]
-    # drop jobs we've already emailed a contact for (dedup carries via DB)
-    candidates = []
-    for r in top:
-        res.considered += 1
-        candidates.append(r)
+    # pull a wide shortlist, then apply strict freshest-first selection
+    pool = [r for r in db.shortlist(limit=limit * 8)]
+    candidates = _freshest_first(pool, limit)
+    res.considered = len(candidates)
 
     if contacts_mod.providers_configured():
         # Python-provider path: resolve now and write outreach_tasks.json directly.

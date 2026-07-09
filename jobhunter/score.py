@@ -29,6 +29,26 @@ _DOMAIN_TOKENS = {
 # Stretch-seniority markers: not auto-rejected, but lower interview odds for a junior.
 _STRETCH_SENIORITY = re.compile(r"\b(senior|sr\.?|lead)\b", re.I)
 
+# INR salary mentions: "6 LPA", "6-12 LPA", "₹8 lakhs", "10 lacs per annum" ...
+_INR_LPA = re.compile(
+    r"(?:₹\s*)?(\d{1,3}(?:\.\d+)?)\s*(?:-|to)?\s*(\d{1,3}(?:\.\d+)?)?\s*(?:lpa|lakhs?|lacs?)\b",
+    re.I)
+
+
+def parse_salary_lpa(text: str):
+    """Best-effort INR salary range from a JD. Returns (min_lpa, max_lpa) or None.
+    USD/unstated salaries return None — we never reject on a salary we can't see."""
+    m = _INR_LPA.search(text or "")
+    if not m:
+        return None
+    lo = float(m.group(1))
+    hi = float(m.group(2)) if m.group(2) else lo
+    if lo > hi:
+        lo, hi = hi, lo
+    if hi > 99:  # absurd parse (e.g. matched a year) — distrust it
+        return None
+    return (lo, hi)
+
 
 @dataclass
 class Score:
@@ -105,6 +125,15 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
         return Score(h, 0, 0, dimensions={"years_required": yrs},
                      reject_reason=f"requires {yrs}+ yrs (> {p.max_years_required})")
 
+    # salary filter: reject only when a stated INR range tops out below the minimum.
+    # (Above-range is fine — spec says never reject a great role for paying MORE.
+    #  Unstated/USD salaries pass; we can't reject what isn't stated.)
+    min_lpa = float((p.cfg.get("salary") or {}).get("min_lpa", 0) or 0)
+    sal = parse_salary_lpa(job.description)
+    if sal and min_lpa and sal[1] < min_lpa:
+        return Score(h, 0, 0, dimensions={"salary_lpa": sal},
+                     reject_reason=f"salary {sal[0]:g}-{sal[1]:g} LPA below {min_lpa:g} LPA minimum")
+
     # ---- positive signals -------------------------------------------------
     title_fit = _title_match(job.title, p.target_roles)
     skill_fit, hits = _skill_overlap(blob, p.skills_core, p.skills_secondary)
@@ -137,6 +166,12 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
     # seniority stretch: a ~1yr candidate is a long shot for senior/lead titles
     stretch = 0.6 if _STRETCH_SENIORITY.search(title) else 1.0
     interview_prob = min(0.95, (score / 100.0) * recency_boost * stretch)
+
+    # hard recency rule (AGENT_SPEC Stage 4): >7 days old is rejected unless exceptional.
+    if bucket == "older" and score < 85:
+        return Score(h, round(score, 1), 0,
+                     dimensions={"recency": bucket, "title_fit": round(title_fit, 2)},
+                     reject_reason="stale (>7 days old) and not exceptional")
 
     dims = {
         "title_fit": round(title_fit, 2),
