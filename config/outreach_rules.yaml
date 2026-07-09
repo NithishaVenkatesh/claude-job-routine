@@ -1,7 +1,7 @@
 # Outreach guardrails (BLUEPRINT §15). Enforced in CODE, not by the LLM.
 # Phase A does not send anything; these take effect from Phase C.
 
-autosend_enabled: false        # SHADOW MODE. Flip to true only after auditing logs.
+autosend_enabled: false        # OFF until targeting is right — no accidental sends.
 daily_send_cap: 6              # hard ceiling per day (also bounded by Hunter credits)
 min_interview_prob_to_send: 0.70   # below this -> queue for manual review, don't send
 verified_email_only: true      # gate on verification...

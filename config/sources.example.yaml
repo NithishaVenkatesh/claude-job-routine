@@ -1,38 +1,21 @@
-# Job sources — all VERIFIED working (dead tokens pruned 2026-07-09).
-# Two kinds:
-#  1. Aggregate/hidden sources: whole feeds where startups post before job boards.
-#  2. Company ATS boards: token = slug in the board URL.
-# A dead/renamed token logs a failure and is skipped — safe to add guesses; the daily
-# report's "source failures" section tells you what to prune.
-# The routine ALSO web-searches for fresh hiring posts daily (web_leads -> ingest-leads).
+# STARTUP-focused sources. No FAANG/big-tech — those pay way above 6-16 LPA and
+# aren't what Nithisha wants. These aggregate feeds are startup-heavy by nature and
+# work locally (no web-search needed), so the local auto-runner finds real startups.
+#
+# HN "Who's Hiring" = hundreds of startup posts monthly (many state salary + remote).
+# RemoteOK / WeWorkRemotely = remote-first startups, lower India-side competition.
+# The salary filter (6-16 LPA) + startup nature of these feeds do the narrowing.
 
 sources:
-  # ---- hidden / aggregate sources (high value, lower competition) ----
-  - { type: hackernews, company: whoishiring }      # startups post here before job boards
+  - { type: hackernews, company: whoishiring }
   - { type: remoteok, company: all }
   - { type: weworkremotely, company: programming }
   - { type: weworkremotely, company: fullstack }
 
-  # ---- AI labs & AI-first startups (verified boards) ----
-  - { type: greenhouse, company: anthropic }
-  - { type: ashby, company: openai }
+  # A few genuine startups with public boards (add your own targets here as you find them):
   - { type: lever, company: mistral }
-  - { type: greenhouse, company: databricks }
-  - { type: greenhouse, company: scaleai }
   - { type: ashby, company: elevenlabs }
   - { type: ashby, company: langchain }
-  - { type: ashby, company: replit }
   - { type: ashby, company: cursor }
   - { type: ashby, company: modal }
-
-  # ---- India-friendly / India-present (verified) ----
-  - { type: greenhouse, company: postman }
-  - { type: greenhouse, company: phonepe }
   - { type: lever, company: cred }
-
-  # ---- dev-tool / infra, remote-friendly (verified) ----
-  - { type: greenhouse, company: stripe }
-  - { type: ashby, company: ramp }
-  - { type: greenhouse, company: vercel }
-  - { type: ashby, company: neon }
-  - { type: greenhouse, company: clickhouse }

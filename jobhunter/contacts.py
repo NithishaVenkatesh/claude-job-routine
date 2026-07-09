@@ -189,13 +189,25 @@ class _QuotaExhausted(Exception):
     pass
 
 
+# Only these titles are worth emailing about a job. If none match -> skip the company
+# entirely (never email a random Director of Investments / Quant analyst / etc.).
+_HIRING_TITLES = (
+    "founder", "co-founder", "cofounder", "ceo", "cto", "chief technology",
+    "head of engineering", "vp engineering", "vp of engineering", "engineering manager",
+    "engineering director", "director of engineering", "tech lead", "technical lead",
+    "ai lead", "ml lead", "head of ai", "head of ml",
+    "recruiter", "talent", "recruiting", "hr", "human resources", "people operations",
+    "hiring", "talent acquisition",
+)
+
+
 def _pick_by_title(items: list[dict], titles: list[str]) -> Optional[dict]:
-    for want in titles:
+    """Return the best hiring-relevant contact, or None if there isn't one (skip company)."""
+    for want in _HIRING_TITLES:
         for it in items:
-            pos = (it.get("position") or "").lower()
-            if want in pos:
+            if want in (it.get("position") or "").lower():
                 return it
-    return items[0] if items else None
+    return None   # no relevant person -> do NOT email anyone here
 
 
 # --------------------------------------------------------------------------
