@@ -286,6 +286,12 @@ class DB:
         return self.s.queryone("SELECT 1 FROM emails WHERE contact_id=? AND job_hash=?",
                                (contact_id, job_hash)) is not None
 
+    def job_has_email(self, job_hash: str) -> bool:
+        """Checkpoint marker: this job already produced at least one draft/queued/sent
+        email (this run or restored prior-run state) — outreach for it is done."""
+        return self.s.queryone("SELECT 1 FROM emails WHERE job_hash=?",
+                               (job_hash,)) is not None
+
     def save_email(self, e: dict):
         try:
             return self.s.insert(

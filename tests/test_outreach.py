@@ -40,6 +40,22 @@ class TestFreshestFirst(unittest.TestCase):
         rows = [{"id": str(i), "posted_at": _iso(2)} for i in range(10)]
         self.assertEqual(len(_freshest_first(rows, limit=4)), 4)
 
+    def test_undated_leads_fill_last_but_are_never_dropped(self):
+        """Speculative/founder-post leads carry no posting date. They must rank after
+        every dated-fresh lead but survive selection (they used to be silently dropped)."""
+        rows = [{"id": "undated", "posted_at": None},
+                {"id": "fresh", "posted_at": _iso(3)},
+                {"id": "week", "posted_at": _iso(150)}]
+        picked = _freshest_first(rows, limit=5)
+        self.assertEqual([r["id"] for r in picked], ["fresh", "week", "undated"])
+
+    def test_undated_leads_still_yield_to_limit(self):
+        rows = [{"id": "undated", "posted_at": None},
+                {"id": "fresh1", "posted_at": _iso(3)},
+                {"id": "fresh2", "posted_at": _iso(5)}]
+        picked = _freshest_first(rows, limit=2)
+        self.assertEqual([r["id"] for r in picked], ["fresh1", "fresh2"])
+
 
 class TestTemplateFill(unittest.TestCase):
     def test_brand_casing(self):

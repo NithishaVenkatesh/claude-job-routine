@@ -4,6 +4,9 @@
     python -m jobhunter.cli search        # fetch all sources -> dedup -> store
     python -m jobhunter.cli score         # score unscored jobs against your profile
     python -m jobhunter.cli report        # print the latest daily report
+    python -m jobhunter.cli export-rerank # top survivors -> rerank_tasks.json for the agent
+    python -m jobhunter.cli apply-llm-scores [path]  # upsert agent's refined_scores.json
+    python -m jobhunter.cli prepare       # refresh contact_tasks.json from the shortlist
     python -m jobhunter.cli build-tasks   # turn Claude's found_contacts.json into email tasks
     python -m jobhunter.cli commit-drafts # validate + queue the emails Claude wrote
     python -m jobhunter.cli test-send [to] # send ONE test email to verify sending works
@@ -169,11 +172,16 @@ def cmd_ingest_leads() -> int:
             title=j["title"][:150], company=j["company"][:80], url=j["url"],
             location=j.get("location", "") or "", remote="remote" in (j.get("location", "") or "").lower(),
             description=(j.get("description") or "")[:4000],
-            posted_at=posted or datetime.now(timezone.utc),
+            # honest recency: undated leads stay undated (scored via the 'unknown'
+            # bucket, 0.5 boost) instead of being faked into the 24h bucket (1.0).
+            # The DB's first_seen column is the recency handle for undated leads.
+            posted_at=posted,
         ))
     new_jobs, seen = db.bulk_upsert_jobs(jobs)
     p = load_profile()
-    sp = run_scoring(db, p, use_llm=False)
+    import os
+    use_llm = os.environ.get("USE_LLM_SCORING", "0") == "1"
+    sp = run_scoring(db, p, use_llm=use_llm)
     pr = prepare(db, p)   # refresh contact tasks incl. fresh leads
     print(f"leads_in={len(leads)} new={len(new_jobs)} already_known={seen} "
           f"scored={sp.scored} shortlisted_now={sp.shortlisted} contact_tasks={pr.need_contact}")
@@ -186,6 +194,12 @@ def cmd_state_pull(path: str | None = None) -> int:
     db = DB()
     counts = pull_state(db, path or DEFAULT_IN)
     print("state restored:", counts)
+    if counts.get("_note") or counts.get("error") or not any(
+            counts.get(k) for k in ("seen", "contacts", "emails")):
+        # loud, un-missable failure — silent memory rot caused weeks of repeated leads
+        print("⚠️  MEMORY UNAVAILABLE — no prior state restored. Leads WILL repeat and "
+              "contact quota may be wasted on companies already handled. Fix the Drive "
+              "connector. Put this warning at the TOP of the final report.")
     db.close()
     return 0
 
@@ -217,6 +231,98 @@ def cmd_push_profile() -> int:
             n += 1
     db.close()
     print(f"{n} profile doc(s) now in Neon — repo can safely drop them.")
+    return 0
+
+
+def cmd_export_rerank() -> int:
+    """Write data/rerank_tasks.json: the top heuristic survivors, for the routine agent
+    to re-score with a calibrated interview probability. This replaces the llm_score()
+    HTTP path, which the cloud sandbox blocks — the agent IS the LLM in the loop."""
+    import json
+    import os
+    from .config import ROOT
+    from .profile import load_profile
+    top_n = int(os.environ.get("RERANK_TOP_N", "40"))
+    db = DB()
+    p = load_profile()
+    rows = db.shortlist(limit=top_n)
+    tasks = [{"job_hash": r["content_hash"], "title": r["title"], "company": r["company"],
+              "location": r["location"], "url": r["url"],
+              "description": (r["description"] or "")[:1200],
+              "heuristic_prob": r["interview_prob"], "heuristic_rationale": r["rationale"]}
+             for r in rows]
+    out = ROOT / "data" / "rerank_tasks.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "profile": p.summary_for_llm(),
+        "instructions": (
+            "You (Claude) re-score each job on ONE metric: this candidate's probability "
+            "of getting an interview if they apply — role fit, skill match, seniority fit, "
+            "likely competition. Never reward brand names; favor roles where THIS candidate "
+            "stands out. Be honest and calibrated. Reject weak fits the heuristic missed "
+            "(hidden seniority, wrong domain, non-engineering). Write data/refined_scores.json "
+            "as {\"scores\":[{\"job_hash\":..., \"interview_prob\":<0.0-1.0>, "
+            "\"score\":<0-100>, \"reject\":<true|false>, \"reject_reason\":<str|null>, "
+            "\"rationale\":<one concrete sentence>}]} — one entry per task, then run: "
+            "python3 -m jobhunter.cli apply-llm-scores"),
+        "tasks": tasks,
+    }, indent=2))
+    print(f"rerank_tasks={len(tasks)} -> {out}")
+    db.close()
+    return 0
+
+
+def cmd_apply_llm_scores(path: str | None = None) -> int:
+    """Upsert the agent's calibrated scores (data/refined_scores.json) into the DB.
+    Shortlist ordering uses interview_prob, so refined scores take effect immediately."""
+    import json
+    from .config import ROOT
+    from .score import Score
+    fp = ROOT / (path or "data/refined_scores.json")
+    if not fp.exists():
+        print(f"no {fp.name} — nothing to apply")
+        return 0
+    items = json.loads(fp.read_text()).get("scores", [])
+    db = DB()
+    applied = rejected = skipped = 0
+    for it in items:
+        jh = it.get("job_hash")
+        try:
+            prob = max(0.0, min(1.0, float(it.get("interview_prob", 0))))
+            score_val = max(0.0, min(100.0, float(it.get("score", prob * 100))))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        if not jh:
+            skipped += 1
+            continue
+        reject = bool(it.get("reject"))
+        s = Score(content_hash=jh, score=score_val, interview_prob=prob,
+                  rationale=str(it.get("rationale", ""))[:400],
+                  reject_reason=(str(it.get("reject_reason") or "agent reject")
+                                 if reject else None),
+                  model="llm:agent")
+        db.save_score(s, "rejected" if reject else "shortlisted")
+        applied += 1
+        rejected += int(reject)
+    print(f"refined_scores applied={applied} rejected_by_agent={rejected} skipped={skipped}")
+    db.close()
+    return 0
+
+
+def cmd_prepare() -> int:
+    """Re-run outreach.prepare() standalone — refreshes data/contact_tasks.json (used
+    after apply-llm-scores so contact tasks reflect the refined ranking)."""
+    from .profile import load_profile
+    from .outreach import prepare
+    db = DB()
+    pr = prepare(db, load_profile())
+    print(f"mode={pr.mode} considered={pr.considered} need_contact={pr.need_contact} "
+          f"by_code={pr.resolved_by_code}")
+    if pr.skipped:
+        for r, n in sorted(pr.skipped.items(), key=lambda x: -x[1]):
+            print(f"  {n}x  {r}")
+    db.close()
     return 0
 
 
@@ -257,7 +363,10 @@ def main(argv: list[str] | None = None) -> int:
         "build-tasks": cmd_build_tasks, "commit-drafts": cmd_commit_drafts,
         "push-profile": cmd_push_profile, "ingest-leads": cmd_ingest_leads,
         "state-pull": cmd_state_pull, "state-push": cmd_state_push,
+        "export-rerank": cmd_export_rerank, "prepare": cmd_prepare,
     }
+    if cmd == "apply-llm-scores":
+        return cmd_apply_llm_scores(argv[1] if len(argv) > 1 else None)
     if cmd == "list":
         return cmd_list(argv[1] if len(argv) > 1 else None)
     if cmd == "test-send":

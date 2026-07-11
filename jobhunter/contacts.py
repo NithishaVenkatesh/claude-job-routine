@@ -25,13 +25,26 @@ from .db import DB
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# Prioritized target titles (best contact first) — BLUEPRINT §5 / AGENT_SPEC Stage 14.
+# Prioritized target titles, decision-makers FIRST (AGENT_SPEC Stage 14:
+# founder -> CTO -> eng leadership -> hiring manager -> recruiter). A founder/eng-lead
+# reply converts far better for a junior candidate than a recruiter inbox.
 TARGET_TITLES = [
-    "recruiter", "technical recruiter", "talent acquisition",
-    "hiring manager", "engineering manager", "ai lead", "ml lead",
-    "head of engineering", "engineering director", "vp engineering",
-    "cto", "co-founder", "founder",
+    "founder", "co-founder", "cto",
+    "vp engineering", "head of engineering", "engineering director",
+    "ai lead", "ml lead", "engineering manager",
+    "hiring manager", "technical recruiter", "recruiter", "talent acquisition",
 ]
+
+# Speculative / funding-trail leads (no public posting yet): the founder/CTO outreach
+# IS the play — never dilute it with a recruiter contact.
+SPECULATIVE_TITLES = ["founder", "co-founder", "cto"]
+
+
+def tier_rank(title: str | None) -> int:
+    """Client-side ranking of a contact title against TARGET_TITLES. Providers treat
+    person_titles as a FILTER, not a priority order — so we must sort ourselves."""
+    t = (title or "").lower()
+    return next((i for i, want in enumerate(TARGET_TITLES) if want in t), len(TARGET_TITLES))
 
 
 def _valid_syntax(email: str) -> bool:
@@ -65,30 +78,45 @@ class ApolloRotatingProvider:
         self.idx += 1
 
     def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
+        all_ = self.find_all(domain, titles, company)
+        return all_[0] if all_ else None
+
+    def find_all(self, domain: str, titles: list[str], company: str = "") -> list[dict]:
+        """Every matched person with a valid revealed email, best tier first.
+        Quota exhaustion mid-list rotates to the next account and resumes at the
+        same person (no re-search, no skipped candidates)."""
+        people: Optional[list] = None
+        out: list[dict] = []
+        i = 0
         while self._key():
             acct = self._key()
             try:
-                person = self._search(acct["api_key"], domain, titles)
-                if person is None:
-                    return None  # searched fine, just nobody matched
-                email = self._reveal(acct["api_key"], person.get("id"))
-                if not _valid_syntax(email):
-                    return None
-                return {
-                    "company": domain, "full_name": person.get("name"),
-                    "title": person.get("title"), "linkedin_url": person.get("linkedin_url"),
-                    "email": email, "source_provider": f"apollo:{acct.get('label')}",
-                    "confidence": 0.9,
-                    "verification_status": _map_apollo_status(person.get("email_status")),
-                }
+                if people is None:
+                    people = self._search(acct["api_key"], domain, titles)
+                    # provider order is arbitrary — rank decision-makers first ourselves
+                    people.sort(key=lambda p: tier_rank(p.get("title")))
+                while i < len(people):
+                    person = people[i]
+                    email = self._reveal(acct["api_key"], person.get("id"))
+                    i += 1
+                    if not _valid_syntax(email):
+                        continue
+                    out.append({
+                        "company": domain, "full_name": person.get("name"),
+                        "title": person.get("title"), "linkedin_url": person.get("linkedin_url"),
+                        "email": email, "source_provider": f"apollo:{acct.get('label')}",
+                        "confidence": 0.9,
+                        "verification_status": _map_apollo_status(person.get("email_status")),
+                    })
+                return out
             except _QuotaExhausted:
-                self._advance()  # rotate to next account, continue
+                self._advance()  # rotate to next account, resume from person i
                 continue
             except Exception:
-                return None
-        return None  # all accounts exhausted
+                return out
+        return out  # all accounts exhausted — return whatever was resolved
 
-    def _search(self, api_key: str, domain: str, titles: list[str]) -> Optional[dict]:
+    def _search(self, api_key: str, domain: str, titles: list[str]) -> list[dict]:
         r = httpx.post(f"{self.BASE}/mixed_people/search",
                        headers={"X-Api-Key": api_key, "Content-Type": "application/json",
                                 "Cache-Control": "no-cache"},
@@ -97,8 +125,7 @@ class ApolloRotatingProvider:
         if r.status_code == 429:
             raise _QuotaExhausted()
         r.raise_for_status()
-        people = r.json().get("people", [])
-        return people[0] if people else None
+        return r.json().get("people", [])
 
     def _reveal(self, api_key: str, person_id: str) -> Optional[str]:
         r = httpx.post(f"{self.BASE}/people/match",
@@ -147,6 +174,11 @@ class HunterProvider:
         return None, False             # all keys exhausted
 
     def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
+        all_ = self.find_all(domain, titles, company)
+        return all_[0] if all_ else None
+
+    def find_all(self, domain: str, titles: list[str], company: str = "") -> list[dict]:
+        """Every hiring-relevant contact with a valid email, best tier first."""
         # ATS URLs give the board host, not the real company domain -> search by name
         params = {"limit": 10}
         if _is_ats_host(domain) and company:
@@ -155,19 +187,21 @@ class HunterProvider:
             params["domain"] = domain
         data, ok = self._get("domain-search", params)
         if not ok or not data:
-            return None
+            return []
         emails = data.get("data", {}).get("emails", [])
-        best = _pick_by_title(emails, titles)
-        if not best or not _valid_syntax(best.get("value", "")):
-            return None
-        return {
-            "company": company or domain,
-            "full_name": " ".join(filter(None, [best.get("first_name"), best.get("last_name")])),
-            "title": best.get("position"), "linkedin_url": best.get("linkedin"),
-            "email": best["value"], "source_provider": "hunter",
-            "confidence": (best.get("confidence") or 0) / 100.0,
-            "verification_status": self._verify(best["value"]),
-        }
+        out = []
+        for best in _pick_all_by_title(emails, titles):
+            if not _valid_syntax(best.get("value", "")):
+                continue
+            out.append({
+                "company": company or domain,
+                "full_name": " ".join(filter(None, [best.get("first_name"), best.get("last_name")])),
+                "title": best.get("position"), "linkedin_url": best.get("linkedin"),
+                "email": best["value"], "source_provider": "hunter",
+                "confidence": (best.get("confidence") or 0) / 100.0,
+                "verification_status": self._verify(best["value"]),
+            })
+        return out
 
     def _verify(self, email: str) -> str:
         data, ok = self._get("email-verifier", {"email": email})
@@ -183,6 +217,9 @@ class CompanySiteProvider:
 
     def find(self, domain: str, titles: list[str], company: str = "") -> Optional[dict]:
         return None
+
+    def find_all(self, domain: str, titles: list[str], company: str = "") -> list[dict]:
+        return []
 
 
 class _QuotaExhausted(Exception):
@@ -204,12 +241,20 @@ _HIRING_TITLES = (
 def _pick_by_title(items: list[dict], titles: list[str]) -> Optional[dict]:
     """Return the best hiring-relevant contact, or None if there isn't one (skip company).
     Word-boundary match, not substring — 'cto' must never match inside 'direCTOr'."""
+    all_ = _pick_all_by_title(items, titles)
+    return all_[0] if all_ else None
+
+
+def _pick_all_by_title(items: list[dict], titles: list[str]) -> list[dict]:
+    """ALL hiring-relevant contacts, best tier first (founder/CTO before recruiter).
+    Empty list if nobody is hiring-relevant — never email a random employee."""
+    out = []
     for want in _HIRING_TITLES:
         pat = re.compile(rf"\b{re.escape(want)}\b")
         for it in items:
-            if pat.search((it.get("position") or "").lower()):
-                return it
-    return None   # no relevant person -> do NOT email anyone here
+            if it not in out and pat.search((it.get("position") or "").lower()):
+                out.append(it)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -248,21 +293,35 @@ def _load_providers() -> list:
     return providers
 
 
-def discover_contact(db: DB, company: str, domain: str) -> Optional[dict]:
-    """Run the waterfall; store and return the best contact, or None."""
+def discover_contacts(db: DB, company: str, domain: str,
+                      titles: list[str] | None = None) -> list[dict]:
+    """Run the waterfall; store and return ALL valid contacts, best tier first.
+    The first provider that yields anything wins (no cross-provider mixing)."""
     if not domain:
-        return None
+        return []
+    titles = titles or TARGET_TITLES
     for prov in _load_providers():
-        contact = prov.find(domain, TARGET_TITLES, company)
-        if contact:
+        found = prov.find_all(domain, titles, company)
+        stored = []
+        for contact in found:
             contact["company"] = company  # store under display name, not raw domain
             cid = db.save_contact(contact)
+            if cid is None:
+                continue
             contact["id"] = cid
+            stored.append(contact)
             db.log("contacts", "company", company, "found",
                    {"provider": contact["source_provider"], "status": contact["verification_status"]})
-            return contact
+        if stored:
+            return stored
     db.log("contacts", "company", company, "not_found", {"domain": domain})
-    return None
+    return []
+
+
+def discover_contact(db: DB, company: str, domain: str) -> Optional[dict]:
+    """Back-compat single-contact wrapper: the best (highest-tier) contact, or None."""
+    all_ = discover_contacts(db, company, domain)
+    return all_[0] if all_ else None
 
 
 def providers_configured() -> bool:

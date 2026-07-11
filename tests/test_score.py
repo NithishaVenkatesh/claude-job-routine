@@ -81,9 +81,23 @@ class TestHardRejects(unittest.TestCase):
         self.assertIn("stale", s.reject_reason)
 
     def test_generic_title_without_domain_rejected(self):
+        # description is substantive (not a thin snippet), so the generic-title
+        # reject applies at full strength
+        s = heuristic_score(_job(title="Solutions Engineer",
+                                 desc="You will demo our platform to enterprise clients, "
+                                      "own technical evaluations, respond to RFPs, and work "
+                                      "with account executives on pre-sales solutioning. "
+                                      "Travel up to 40%. Strong presentation skills required. "
+                                      "python fastapi rag docker"), self.p)
+        self.assertTrue(s.rejected)
+
+    def test_thin_snippet_lead_survives_generic_title_reject(self):
+        """A snippet-only lead (WebFetch enrichment failed) must never be skill-rejected
+        for text it had no room to show — it is tagged needs_enrichment instead."""
         s = heuristic_score(_job(title="Solutions Engineer",
                                  desc="python fastapi rag docker"), self.p)
-        self.assertTrue(s.rejected)
+        self.assertFalse(s.rejected)
+        self.assertTrue(s.dimensions.get("needs_enrichment"))
 
 
 class TestPositiveScoring(unittest.TestCase):

@@ -30,7 +30,7 @@ too_senior_keywords: [senior staff, staff, principal, distinguished, lead, direc
   vice president, head of, manager, architect]
 
 employment_types: [full-time, contract, freelance, internship]
-locations: [remote, "remote india", bangalore, bengaluru, chennai, india]
+locations: [remote, "remote india", coimbatore, bangalore, bengaluru, chennai, india]
 remote_pref: remote
 
 skills_core: [fastapi, rag, retrieval augmented generation, langgraph, langchain, llm,

@@ -4,7 +4,8 @@ judgment or external access, and this code does everything deterministic around 
 Flow (cloud routine):
   1. prepare(db,p)            -> writes data/contact_tasks.json = shortlisted jobs that
                                   need a contact (company, domain, target titles, job info).
-  2. [Claude, via Apollo MCP] -> finds one verified contact per company, writes
+  2. [Claude, via MCP]        -> finds ALL valid contacts per company (decision-makers
+                                  first; founder/CTO only for speculative leads), writes
                                   data/found_contacts.json.
   3. build_tasks(db,p)        -> stores those contacts, joins job + research + profile,
                                   writes data/outreach_tasks.json (one email task each).
@@ -31,9 +32,12 @@ FOUND_CONTACTS_PATH = ROOT / "data" / "found_contacts.json"
 TASKS_PATH = ROOT / "data" / "outreach_tasks.json"
 DRAFTS_PATH = ROOT / "data" / "outreach_drafts.json"
 FIXED_TEMPLATE_PATH = ROOT / "config" / "outreach_template.md"
-# Cap contact lookups per run. Hunter free = 50 searches/month, so keep this small
-# (env-overridable). Each shortlisted company = one lookup = one credit.
-OUTREACH_TOP_N = int(_os.environ.get("OUTREACH_TOP_N", "25"))
+# Outreach breadth is quality-gated, NOT count-capped: every shortlisted job that clears
+# OUTREACH_MIN_PROB proceeds. OUTREACH_MAX is only a budget guard against provider-quota
+# blowups (candidates are processed best-first, so a quota spillover costs the weak tail).
+# OUTREACH_TOP_N is honored as a legacy env override.
+OUTREACH_MAX = int(_os.environ.get("OUTREACH_MAX", _os.environ.get("OUTREACH_TOP_N", "500")))
+OUTREACH_MIN_PROB = float(_os.environ.get("OUTREACH_MIN_PROB", "0.0"))
 
 
 _BRANDS = {
@@ -167,29 +171,52 @@ def _bucket_of(posted_at: str | None) -> str:
     return "24h" if h <= 24 else "48h" if h <= 48 else "72h" if h <= 72 else "7d" if h <= 168 else "older"
 
 
+_BUCKET_ORDER = {"24h": 0, "48h": 1, "72h": 2, "7d": 3, "unknown": 4}
+
+
 def _freshest_first(rows, limit: int):
     """AGENT_SPEC Stage 4: fill outreach slots from <24h jobs FIRST; expand to 48h,
-    then 72h, then 7d only if slots remain. Never include >7d."""
-    buckets = {"24h": [], "48h": [], "72h": [], "7d": []}
+    72h, 7d, then UNDATED leads as the final fill tier (never silently dropped —
+    speculative/founder-post leads usually carry no posting date). Never include >7d."""
+    buckets = {"24h": [], "48h": [], "72h": [], "7d": [], "unknown": []}
     for r in rows:
         b = _bucket_of(r["posted_at"])
         if b in buckets:
             buckets[b].append(r)
     picked = []
-    for b in ("24h", "48h", "72h", "7d"):
+    for b in ("24h", "48h", "72h", "7d", "unknown"):
         if len(picked) >= limit:
             break
         picked.extend(buckets[b][: limit - len(picked)])
     return picked
 
 
-def prepare(db: DB, p: Profile, limit: int = OUTREACH_TOP_N) -> PrepareResult:
+def _lead_type(description: str | None) -> str:
+    d = (description or "").lower()
+    return "speculative" if ("[speculative]" in d or "[funding-trail]" in d) else "posted"
+
+
+def prepare(db: DB, p: Profile, limit: int | None = None) -> PrepareResult:
     from . import contacts as contacts_mod, research as research_mod
     res = PrepareResult()
 
-    # pull a wide shortlist, then apply strict freshest-first selection
-    pool = [r for r in db.shortlist(limit=limit * 8)]
-    candidates = _freshest_first(pool, limit)
+    # Quality-gated, count-uncapped: everything shortlisted above the probability floor
+    # proceeds. OUTREACH_MAX is a provider-quota budget guard, not a quality filter.
+    ceiling = limit or OUTREACH_MAX
+    pool = [r for r in db.shortlist(limit=ceiling, min_prob=OUTREACH_MIN_PROB)
+            if _bucket_of(r["posted_at"]) in _BUCKET_ORDER]      # never >7d-old
+    # Best-first: interview probability decides, freshness breaks ties — if a
+    # quota/wall-clock limit cuts the run short, only the weakest tail spills over.
+    pool.sort(key=lambda r: (-(r["interview_prob"] or 0.0),
+                             _BUCKET_ORDER[_bucket_of(r["posted_at"])]))
+    # Checkpoint/resume: a job that already has a drafted/queued/sent email (this run
+    # or restored from prior-run state) is done — don't burn contact quota on it again.
+    candidates = []
+    for r in pool:
+        if db.job_has_email(r["content_hash"]):
+            res._skip("already drafted (prior run)")
+            continue
+        candidates.append(r)
     res.considered = len(candidates)
 
     if contacts_mod.providers_configured():
@@ -198,17 +225,19 @@ def prepare(db: DB, p: Profile, limit: int = OUTREACH_TOP_N) -> PrepareResult:
         _prepare_via_code(db, p, candidates, res)
         return res
 
-    # MCP path: emit the "needs a contact" list for the agent to resolve via Apollo MCP.
-    from .contacts import TARGET_TITLES
+    # MCP path: emit the "needs a contact" list for the agent to resolve via MCP.
+    from .contacts import TARGET_TITLES, SPECULATIVE_TITLES
     tasks = []
     for r in candidates:
         job = _job_from_row(r)
         domain = research_mod.domain_from_url(job.url)
+        lead = _lead_type(job.description)
         tasks.append({
             "job_hash": job.content_hash(),
             "company": job.company,
             "domain": domain,
-            "target_titles": TARGET_TITLES,
+            "lead_type": lead,
+            "target_titles": SPECULATIVE_TITLES if lead == "speculative" else TARGET_TITLES,
             "job": {"title": job.title, "url": job.url, "location": job.location,
                     "description": (job.description or "")[:1200]},
         })
@@ -216,16 +245,22 @@ def prepare(db: DB, p: Profile, limit: int = OUTREACH_TOP_N) -> PrepareResult:
     CONTACT_TASKS_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONTACT_TASKS_PATH.write_text(json.dumps({
         "instructions": (
-            "For EACH task, use the Apollo MCP tools to find ONE relevant person at the company. "
-            "Search by the COMPANY NAME (the 'domain' field is often the ATS host like "
-            "greenhouse.io, not the real company domain — ignore it if so). Prefer these titles in "
-            "order: recruiter, hiring/engineering manager, AI/ML lead, eng director, founder/CTO. "
-            "Obtain their VERIFIED professional email. Never guess or fabricate an email. Only "
-            "include a contact if you have a real, verified/high-confidence email. Write results "
-            "to data/found_contacts.json as "
+            "For EACH task, use the contact-finding MCP tools to find EVERY person at the "
+            "company who matches the task's target_titles and has a REAL, verified/"
+            "high-confidence professional email — return ALL of them, not just one "
+            "(multiple contacts per job_hash are expected and handled downstream). Search "
+            "by the COMPANY NAME (the 'domain' field is often the ATS host like "
+            "greenhouse.io, not the real company domain — ignore it if so). target_titles "
+            "is a PRIORITY order, decision-makers first: resolve founder/CTO/eng-lead "
+            "contacts before recruiters, so if quota runs out you got the ones that "
+            "convert. Tasks with lead_type='speculative' are freshly-funded startups with "
+            "no public posting — contact ONLY the founder or CTO for those; that outreach "
+            "is the whole play. Never guess or fabricate an email; never include pattern-"
+            "constructed (first.last@) or 'not_unlocked' addresses. Write results to "
+            "data/found_contacts.json as "
             "{\"contacts\":[{\"job_hash\":..., \"company\":..., \"full_name\":..., \"title\":..., "
             "\"email\":..., \"linkedin_url\":..., \"verification_status\":\"verified\", "
-            "\"source\":\"apollo_mcp\"}]}. Skip tasks where no verified email is found."),
+            "\"source\":\"vibe\"}]}. Skip tasks where no verified email is found."),
         "tasks": tasks,
     }, indent=2))
     db.log("outreach", "prepare", "-", "contact_tasks", {"need_contact": len(tasks)})
@@ -235,20 +270,24 @@ def prepare(db: DB, p: Profile, limit: int = OUTREACH_TOP_N) -> PrepareResult:
 def _prepare_via_code(db, p, candidates, res: PrepareResult):
     from . import contacts as contacts_mod, research as research_mod
     from .email_draft import choose_template, _load_style_guide, _load_template
+    from .contacts import TARGET_TITLES, SPECULATIVE_TITLES
     tasks = []
     for r in candidates:
         job = _job_from_row(r)
         research = research_mod.research_company(db, job)
         domain = research_mod.domain_from_url(job.url)
-        contact = contacts_mod.discover_contact(db, job.company, domain)
-        if not contact:
+        titles = SPECULATIVE_TITLES if _lead_type(job.description) == "speculative" \
+            else TARGET_TITLES
+        found = contacts_mod.discover_contacts(db, job.company, domain, titles)
+        if not found:
             res._skip("no verified contact found")
             continue
-        if contact.get("id") and db.email_exists(contact["id"], job.content_hash()):
-            res._skip("already emailed")
-            continue
-        res.resolved_by_code += 1
-        tasks.append(_email_task(job, contact, research, choose_template, _load_template))
+        for contact in found:      # one email task per valid contact, best tier first
+            if contact.get("id") and db.email_exists(contact["id"], job.content_hash()):
+                res._skip("already emailed")
+                continue
+            res.resolved_by_code += 1
+            tasks.append(_email_task(job, contact, research, choose_template, _load_template))
     _write_outreach_tasks(p, tasks)
     render_fixed_drafts()
 
@@ -267,6 +306,10 @@ def build_tasks(db: DB, p: Profile) -> BuildResult:
 
     ctx = {t["job_hash"]: t for t in json.loads(CONTACT_TASKS_PATH.read_text()).get("tasks", [])}
     found = json.loads(FOUND_CONTACTS_PATH.read_text()).get("contacts", [])
+    # Multiple contacts per job_hash are expected (all valid people at a company).
+    # Process decision-makers first so drafts land in the report best-first.
+    from .contacts import tier_rank
+    found.sort(key=lambda c: tier_rank(c.get("title")))
     tasks = []
     for c in found:
         res.contacts_in += 1

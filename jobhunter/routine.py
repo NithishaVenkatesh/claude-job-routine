@@ -19,7 +19,8 @@ from . import llm as llm_mod
 
 SHORTLIST_THRESHOLD = 0.0   # jobs with interview_prob above this become 'shortlisted'
 LLM_REFINE_TOP_N = 40       # only the best heuristic matches get (costly) LLM scoring
-OUTREACH_TOP_N = 25         # only pursue contacts/emails for the very top matches
+# (outreach breadth lives in outreach.py: quality-gated via OUTREACH_MIN_PROB,
+#  budget-guarded via OUTREACH_MAX — no fixed per-run company cap anymore)
 
 
 @dataclass

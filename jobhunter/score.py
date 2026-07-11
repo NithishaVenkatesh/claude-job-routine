@@ -29,6 +29,10 @@ _DOMAIN_TOKENS = {
 # Stretch-seniority markers: not auto-rejected, but lower interview odds for a junior.
 _STRETCH_SENIORITY = re.compile(r"\b(senior|sr\.?|lead)\b", re.I)
 
+# Below this many description chars the lead is snippet-only (WebFetch enrichment
+# failed/unavailable) — too thin to skill-reject on; scoring leans on the title.
+_THIN_DESC_CHARS = 200
+
 # INR salary mentions: "6 LPA", "6-12 LPA", "₹8 lakhs", "10 lacs per annum" ...
 _INR_LPA = re.compile(
     r"(?:₹\s*)?(\d{1,3}(?:\.\d+)?)\s*(?:-|to)?\s*(\d{1,3}(?:\.\d+)?)?\s*(?:lpa|lakhs?|lacs?)\b",
@@ -159,7 +163,11 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
 
     # partial title matches (e.g. "...Solutions Engineer") only count if the title
     # also carries an AI/backend domain signal — kills generic false positives.
-    if title_fit < 1.0 and not has_domain:
+    # EXCEPT under thin text (snippet-only lead where WebFetch enrichment failed):
+    # a good role must never be rejected for missing skill keywords it had no room
+    # to show — lean on title fit, tag it needs-enrichment, let re-ranking judge it.
+    thin = len((job.description or "").strip()) < _THIN_DESC_CHARS
+    if title_fit < 1.0 and not has_domain and not thin:
         return Score(h, round(score, 1), 0,
                      dimensions={"title_fit": round(title_fit, 2)},
                      reject_reason="generic title, no AI/backend domain signal")
@@ -187,6 +195,8 @@ def heuristic_score(job: JobPosting, p: Profile) -> Score:
         "seniority_stretch": stretch < 1.0,
         "skills_hit": hits[:12],
     }
+    if thin:
+        dims["needs_enrichment"] = True   # snippet-only; re-attempt enrichment next run
     rationale = (f"title~{title_fit:.0%}, skills {len(hits)} matched, "
                  f"{'remote/location ok' if remote_fit >= 1 else 'location weak'}, posted {bucket}"
                  f"{', senior-stretch' if stretch < 1.0 else ''}")

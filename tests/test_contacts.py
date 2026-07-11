@@ -98,8 +98,8 @@ class TestApolloRotation(unittest.TestCase):
         def fake_search(api_key, domain, titles):
             if api_key == "k1":
                 raise _QuotaExhausted()
-            return {"id": "p1", "name": "Jane Roe", "title": "Recruiter",
-                    "email_status": "verified", "linkedin_url": None}
+            return [{"id": "p1", "name": "Jane Roe", "title": "Recruiter",
+                     "email_status": "verified", "linkedin_url": None}]
 
         with mock.patch.object(prov, "_search", side_effect=fake_search), \
              mock.patch.object(prov, "_reveal", return_value="jane@acme.com"):
@@ -112,10 +112,61 @@ class TestApolloRotation(unittest.TestCase):
     def test_never_returns_invalid_email(self):
         prov = ApolloRotatingProvider([{"label": "a1", "api_key": "k1"}])
         with mock.patch.object(prov, "_search",
-                               return_value={"id": "p1", "name": "X"}), \
+                               return_value=[{"id": "p1", "name": "X"}]), \
              mock.patch.object(prov, "_reveal",
                                return_value="email_not_unlocked@domain.com"):
             self.assertIsNone(prov.find("acme.com", contacts.TARGET_TITLES))
+
+    def test_find_all_returns_every_valid_contact_decision_makers_first(self):
+        """All valid people come back, sorted founder/CTO before recruiter — the
+        provider's arbitrary order must never decide who gets contacted."""
+        prov = ApolloRotatingProvider([{"label": "a1", "api_key": "k1"}])
+        people = [{"id": "p1", "name": "Rita Recruiter", "title": "Technical Recruiter",
+                   "email_status": "verified", "linkedin_url": None},
+                  {"id": "p2", "name": "Fred Founder", "title": "Co-Founder & CEO",
+                   "email_status": "verified", "linkedin_url": None}]
+        emails = {"p1": "rita@acme.com", "p2": "fred@acme.com"}
+
+        with mock.patch.object(prov, "_search", return_value=people), \
+             mock.patch.object(prov, "_reveal", side_effect=lambda k, pid: emails[pid]):
+            out = prov.find_all("acme.com", contacts.TARGET_TITLES)
+
+        self.assertEqual([c["email"] for c in out], ["fred@acme.com", "rita@acme.com"])
+
+    def test_quota_mid_list_rotates_and_resumes_without_losing_contacts(self):
+        prov = ApolloRotatingProvider([{"label": "a1", "api_key": "k1"},
+                                       {"label": "a2", "api_key": "k2"}])
+        people = [{"id": "p1", "name": "A", "title": "CTO", "email_status": "verified"},
+                  {"id": "p2", "name": "B", "title": "Recruiter", "email_status": "verified"}]
+
+        def fake_reveal(api_key, pid):
+            if api_key == "k1" and pid == "p2":
+                raise _QuotaExhausted()
+            return f"{pid}@acme.com"
+
+        with mock.patch.object(prov, "_search", return_value=list(people)), \
+             mock.patch.object(prov, "_reveal", side_effect=fake_reveal):
+            out = prov.find_all("acme.com", contacts.TARGET_TITLES)
+
+        self.assertEqual([c["email"] for c in out], ["p1@acme.com", "p2@acme.com"])
+
+
+class TestTierRank(unittest.TestCase):
+    def test_decision_makers_outrank_recruiters(self):
+        self.assertLess(contacts.tier_rank("Co-Founder & CEO"),
+                        contacts.tier_rank("Technical Recruiter"))
+        self.assertLess(contacts.tier_rank("CTO"),
+                        contacts.tier_rank("Engineering Manager"))
+        self.assertLess(contacts.tier_rank("Engineering Manager"),
+                        contacts.tier_rank("Talent Acquisition Partner"))
+
+    def test_unknown_titles_rank_last(self):
+        self.assertGreater(contacts.tier_rank("Accountant"),
+                           contacts.tier_rank("recruiter"))
+        self.assertGreater(contacts.tier_rank(None), contacts.tier_rank("founder"))
+
+    def test_speculative_titles_are_founder_cto_only(self):
+        self.assertEqual(contacts.SPECULATIVE_TITLES, ["founder", "co-founder", "cto"])
 
 
 if __name__ == "__main__":
