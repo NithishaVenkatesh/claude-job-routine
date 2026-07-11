@@ -87,8 +87,14 @@ def render_fixed_drafts() -> int:
     for t in tasks:
         first_name = _first_name((t.get("contact") or {}).get("full_name") or "")
         company = _clean_company((t.get("job") or {}).get("company") or "")
+        # [Role] = the job title; speculative leads carry a "Speculative:" prefix
+        # that must never appear in a subject line.
+        role = ((t.get("job") or {}).get("title") or "").strip()
+        if role.lower().startswith("speculative:"):
+            role = role.split(":", 1)[1].strip()
         def fill(s: str) -> str:
-            return s.replace("[Name]", first_name).replace("[Company]", company)
+            return (s.replace("[Name]", first_name).replace("[Company]", company)
+                     .replace("[Role]", role or "your team"))
         drafts.append({"id": t["id"], "subject": fill(subject_tpl),
                        "body": fill(body_tpl), "hook_note": "fixed template"})
     DRAFTS_PATH.write_text(json.dumps({"drafts": drafts}, indent=2))

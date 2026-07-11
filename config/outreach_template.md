@@ -1,10 +1,7 @@
-Subject: Microsoft hackathon winner wants to join [Company]
+Subject: Microsoft agent hackathon winner interested in joining [Role] at [Company]
 
-Hi [Name],
+Hey [Name],
 
-I just won the Agent League Hackathon building Athenaeum, a multi-agent tutoring system with a red-team-hardened safety layer (100% direct block-rate across 232 adversarial cases) and citation-grounded retrieval. I also co-built NextHire AI, an agentic dev-evaluation SaaS product.
+your product's good, could be inevitable. I've built the exact thing that gets it there and I don't do slow. not sending a resume, sending a bet on myself. 15 min this week, worst case you say no, best case you stop losing to teams who move faster.
 
-Resume - https://docs.google.com/document/d/1mHPo_q57TWKJAEs1sAYfMYLXusMlc5l0lcyK1uf0gfg/edit?usp=sharing
-Would love to bring that to [Company]. Got 15 min this week?
-
-Nithisha
+Best, Nithisha.
